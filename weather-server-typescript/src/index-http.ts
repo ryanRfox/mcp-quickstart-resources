@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { z } from "zod";
-import express from "express";
+import express, { Request, Response } from "express";
 import cors from "cors";
 
 const NWS_API_BASE = "https://api.weather.gov";
@@ -222,52 +222,45 @@ async function main() {
   const app = express();
   const PORT = process.env.PORT || 3000;
   
+  // Parse JSON bodies
+  app.use(express.json());
+  
   // Enable CORS for all origins
   app.use(cors());
+  
+  // Store active transports
+  let sseTransport: SSEServerTransport | null = null;
   
   // Health check endpoint
   app.get("/health", (req, res) => {
     res.json({ status: "ok", name: "weather-mcp-server" });
   });
   
-  // Handle OPTIONS for CORS preflight
-  app.options("/sse", (req, res) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type');
-    res.sendStatus(200);
-  });
-  
-  // SSE endpoint for MCP
+  // SSE endpoint for MCP - establishes SSE connection
   app.get("/sse", async (req, res) => {
     console.log("SSE connection initiated");
     
-    // Set headers for SSE
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
-      'X-Accel-Buffering': 'no' // Disable buffering for Nginx/proxies
-    });
-    
-    // Create transport and connect
-    const transport = new SSEServerTransport("/sse", res);
-    await server.connect(transport);
-    
-    console.log("Client connected via SSE");
-    
-    // Keep connection alive with periodic heartbeat
-    const heartbeat = setInterval(() => {
-      res.write(':\n\n'); // SSE comment for keepalive
-    }, 30000);
+    // Let SSEServerTransport handle the headers
+    sseTransport = new SSEServerTransport("/messages", res);
     
     // Clean up on client disconnect
-    req.on('close', () => {
+    res.on('close', () => {
       console.log('Client disconnected from SSE');
-      clearInterval(heartbeat);
-      res.end();
+      sseTransport = null;
     });
+    
+    await server.connect(sseTransport);
+    console.log("Client connected via SSE");
+  });
+  
+  // Message endpoint for MCP - handles client-to-server messages
+  app.post("/messages", async (req, res) => {
+    if (!sseTransport) {
+      res.status(400).json({ error: "No active SSE connection" });
+      return;
+    }
+    
+    await sseTransport.handlePostMessage(req, res);
   });
   
   app.listen(PORT, () => {
