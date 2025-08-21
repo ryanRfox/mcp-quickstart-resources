@@ -249,6 +249,102 @@ async function main() {
   app.get("/health", (req, res) => {
     res.json({ status: "ok", name: "weather-mcp-server" });
   });
+
+  // OAuth 2.0 Authorization Server Metadata (RFC8414) - Required by MCP spec
+  app.get("/.well-known/oauth-authorization-server", (req, res) => {
+    console.log("OAuth authorization server metadata requested");
+    const baseUrl = `https://${req.get('host')}`;
+    res.json({
+      issuer: baseUrl,
+      authorization_endpoint: `${baseUrl}/authorize`,
+      token_endpoint: `${baseUrl}/token`,
+      registration_endpoint: `${baseUrl}/register`,
+      response_types_supported: ["code"],
+      grant_types_supported: ["authorization_code"],
+      code_challenge_methods_supported: ["S256"],
+      token_endpoint_auth_methods_supported: ["none", "client_secret_basic"],
+      scopes_supported: ["read", "write"],
+      subject_types_supported: ["public"]
+    });
+  });
+
+  // MCP-specific OAuth discovery endpoints (for SSE/message endpoints)
+  app.get("/.well-known/oauth-authorization-server/sse", (req, res) => {
+    console.log("MCP SSE endpoint discovery requested");
+    const baseUrl = `https://${req.get('host')}`;
+    res.json({
+      sse_endpoint: `${baseUrl}/sse`,
+      message_endpoint: `${baseUrl}/messages`
+    });
+  });
+
+  app.get("/.well-known/oauth-protected-resource/sse", (req, res) => {
+    console.log("OAuth protected resource discovery requested");
+    const baseUrl = `https://${req.get('host')}`;
+    res.json({
+      resource_server: baseUrl,
+      sse_endpoint: `${baseUrl}/sse`,
+      message_endpoint: `${baseUrl}/messages`
+    });
+  });
+
+  // OAuth Dynamic Client Registration (RFC7591) - Required for MCP
+  app.post("/register", (req, res) => {
+    console.log("Dynamic Client Registration requested:", {
+      clientName: req.body.client_name,
+      redirectUris: req.body.redirect_uris,
+      grantTypes: req.body.grant_types
+    });
+    
+    // For a public weather server, auto-approve registration
+    const clientId = `weather-client-${Date.now()}`;
+    res.json({
+      client_id: clientId,
+      client_id_issued_at: Math.floor(Date.now() / 1000),
+      grant_types: ["authorization_code"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none", // Public client
+      redirect_uris: req.body.redirect_uris || ["https://claude.ai/api/mcp/auth_callback"]
+    });
+  });
+
+  // OAuth authorization endpoint (simplified for public server)
+  app.get("/authorize", (req, res) => {
+    console.log("OAuth authorization requested:", req.query);
+    // For a public server, auto-approve and redirect with code
+    const code = `auth_code_${Date.now()}`;
+    const redirectUri = req.query.redirect_uri;
+    const state = req.query.state;
+    
+    if (!redirectUri) {
+      res.status(400).json({ error: "invalid_request", error_description: "Missing redirect_uri" });
+      return;
+    }
+    
+    const callbackUrl = new URL(redirectUri as string);
+    callbackUrl.searchParams.set('code', code);
+    if (state) {
+      callbackUrl.searchParams.set('state', state as string);
+    }
+    
+    res.redirect(callbackUrl.toString());
+  });
+
+  // OAuth token endpoint
+  app.post("/token", (req, res) => {
+    console.log("OAuth token requested:", {
+      grantType: req.body.grant_type,
+      clientId: req.body.client_id
+    });
+    
+    // For a public server, issue tokens without validation
+    res.json({
+      access_token: `access_token_${Date.now()}`,
+      token_type: "Bearer",
+      expires_in: 3600,
+      scope: "read write"
+    });
+  });
   
   // SSE endpoint for MCP - establishes SSE connection
   app.get("/sse", async (req, res) => {
