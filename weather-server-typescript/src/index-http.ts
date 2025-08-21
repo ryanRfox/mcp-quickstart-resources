@@ -222,11 +222,25 @@ async function main() {
   const app = express();
   const PORT = process.env.PORT || 3000;
   
+  console.log("Initializing MCP HTTP/SSE server...");
+  console.log("Environment:", {
+    NODE_ENV: process.env.NODE_ENV,
+    PORT: PORT,
+    Platform: process.platform,
+    NodeVersion: process.version
+  });
+  
   // Parse JSON bodies
   app.use(express.json());
   
   // Enable CORS for all origins
   app.use(cors());
+  
+  // Log all requests
+  app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+    next();
+  });
   
   // Store active transports
   let sseTransport: SSEServerTransport | null = null;
@@ -238,38 +252,93 @@ async function main() {
   
   // SSE endpoint for MCP - establishes SSE connection
   app.get("/sse", async (req, res) => {
-    console.log("SSE connection initiated");
+    const clientInfo = {
+      ip: req.headers['x-forwarded-for'] || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+      timestamp: new Date().toISOString()
+    };
+    console.log("SSE connection initiated:", clientInfo);
     
-    // Let SSEServerTransport handle the headers
-    sseTransport = new SSEServerTransport("/messages", res);
-    
-    // Clean up on client disconnect
-    res.on('close', () => {
-      console.log('Client disconnected from SSE');
-      sseTransport = null;
-    });
-    
-    await server.connect(sseTransport);
-    console.log("Client connected via SSE");
+    try {
+      // Let SSEServerTransport handle the headers
+      sseTransport = new SSEServerTransport("/messages", res);
+      console.log("SSEServerTransport created successfully");
+      
+      // Clean up on client disconnect
+      res.on('close', () => {
+        console.log('Client disconnected from SSE:', {
+          timestamp: new Date().toISOString(),
+          wasTransportActive: sseTransport !== null
+        });
+        sseTransport = null;
+      });
+      
+      res.on('error', (error) => {
+        console.error('SSE response error:', error);
+        sseTransport = null;
+      });
+      
+      console.log("Connecting server to transport...");
+      await server.connect(sseTransport);
+      console.log("Server connected to SSE transport successfully");
+      
+    } catch (error) {
+      console.error("Error establishing SSE connection:", error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Failed to establish SSE connection" });
+      }
+    }
   });
   
   // Message endpoint for MCP - handles client-to-server messages
   app.post("/messages", async (req, res) => {
+    console.log("Received POST to /messages:", {
+      hasTransport: sseTransport !== null,
+      bodySize: JSON.stringify(req.body).length,
+      contentType: req.headers['content-type']
+    });
+    
     if (!sseTransport) {
+      console.error("No active SSE connection for message handling");
       res.status(400).json({ error: "No active SSE connection" });
       return;
     }
     
-    await sseTransport.handlePostMessage(req, res);
+    try {
+      console.log("Handling message with transport...");
+      await sseTransport.handlePostMessage(req, res);
+      console.log("Message handled successfully");
+    } catch (error) {
+      console.error("Error handling message:", error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Failed to handle message" });
+      }
+    }
   });
   
   app.listen(PORT, () => {
+    console.log("========================================");
     console.log(`Weather MCP Server running on port ${PORT}`);
     console.log(`SSE endpoint: http://localhost:${PORT}/sse`);
+    console.log(`Messages endpoint: http://localhost:${PORT}/messages`);
+    console.log(`Health check: http://localhost:${PORT}/health`);
+    console.log("========================================");
+    console.log("Server ready to accept connections");
   });
 }
 
 main().catch((error) => {
   console.error("Fatal error in main():", error);
   process.exit(1);
+});
+
+// Handle graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully...');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received, shutting down gracefully...');
+  process.exit(0);
 });
