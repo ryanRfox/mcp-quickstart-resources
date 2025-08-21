@@ -230,11 +230,44 @@ async function main() {
     res.json({ status: "ok", name: "weather-mcp-server" });
   });
   
+  // Handle OPTIONS for CORS preflight
+  app.options("/sse", (req, res) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    res.sendStatus(200);
+  });
+  
   // SSE endpoint for MCP
   app.get("/sse", async (req, res) => {
+    console.log("SSE connection initiated");
+    
+    // Set headers for SSE
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+      'X-Accel-Buffering': 'no' // Disable buffering for Nginx/proxies
+    });
+    
+    // Create transport and connect
     const transport = new SSEServerTransport("/sse", res);
     await server.connect(transport);
+    
     console.log("Client connected via SSE");
+    
+    // Keep connection alive with periodic heartbeat
+    const heartbeat = setInterval(() => {
+      res.write(':\n\n'); // SSE comment for keepalive
+    }, 30000);
+    
+    // Clean up on client disconnect
+    req.on('close', () => {
+      console.log('Client disconnected from SSE');
+      clearInterval(heartbeat);
+      res.end();
+    });
   });
   
   app.listen(PORT, () => {
