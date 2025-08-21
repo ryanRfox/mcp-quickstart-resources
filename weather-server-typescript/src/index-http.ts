@@ -356,23 +356,65 @@ async function main() {
     console.log("SSE connection initiated:", clientInfo);
     
     try {
-      // Let SSEServerTransport handle the headers
+      // Critical headers for Render/Nginx SSE support
+      res.setHeader('X-Accel-Buffering', 'no'); // Disable proxy buffering
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Connection', 'keep-alive');
+      res.setTimeout(0); // Disable Express timeout
+      
+      // Let SSEServerTransport handle the core SSE headers
       sseTransport = new SSEServerTransport("/messages", res);
       console.log("SSEServerTransport created successfully");
+      
+      // Implement heartbeat to prevent 5-second timeout
+      const heartbeat = setInterval(() => {
+        try {
+          if (!res.destroyed && !res.writableEnded) {
+            // Send SSE comment as heartbeat
+            res.write(': heartbeat\n\n');
+            console.log('SSE heartbeat sent');
+          } else {
+            clearInterval(heartbeat);
+            console.log('SSE heartbeat stopped - connection closed');
+          }
+        } catch (error) {
+          console.error('Error sending heartbeat:', error);
+          clearInterval(heartbeat);
+        }
+      }, 2000); // Every 2 seconds to prevent 5-second timeout
       
       // Clean up on client disconnect
       res.on('close', () => {
         console.log('Client disconnected from SSE:', {
           timestamp: new Date().toISOString(),
-          wasTransportActive: sseTransport !== null
+          wasTransportActive: sseTransport !== null,
+          reason: 'close event'
         });
+        clearInterval(heartbeat);
         sseTransport = null;
       });
       
       res.on('error', (error) => {
         console.error('SSE response error:', error);
+        clearInterval(heartbeat);
         sseTransport = null;
       });
+      
+      res.on('finish', () => {
+        console.log('SSE response finished:', {
+          timestamp: new Date().toISOString(),
+          reason: 'finish event'
+        });
+      });
+      
+      res.on('end', () => {
+        console.log('SSE response ended:', {
+          timestamp: new Date().toISOString(),
+          reason: 'end event'
+        });
+      });
+      
+      // Let SSEServerTransport handle headers and connection setup
       
       console.log("Connecting server to transport...");
       await server.connect(sseTransport);
